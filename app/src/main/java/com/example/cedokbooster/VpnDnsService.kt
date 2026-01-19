@@ -45,6 +45,10 @@ class VpnDnsService : VpnService() {
         
         private var isRunning = AtomicBoolean(false)
         private var currentDns = "1.0.0.1"
+
+        // REAL-TIME DNS HEALTH MONITOR + SMART SWITCH
+        private const val MAX_DNS_FAILURES = 5
+        private const val MIN_SWITCH_INTERVAL = 60_000L // 1 min
         
         fun startVpn(context: Context, dnsType: String = "A") {
             val intent = Intent(context, VpnDnsService::class.java).apply {
@@ -93,10 +97,8 @@ class VpnDnsService : VpnService() {
     // DNS Health Monitor
     private var dnsHealthMonitorJob: kotlinx.coroutines.Job? = null
     private val dnsFailureCount = AtomicInteger(0)
-    private const val MAX_DNS_FAILURES = 5
     private var lastSwitchTime = 0L
-    private const val MIN_SWITCH_INTERVAL = 60_000L // 1 min
-    
+        
     /**
      * Dapatkan DNS type optimal secara auto
      */
