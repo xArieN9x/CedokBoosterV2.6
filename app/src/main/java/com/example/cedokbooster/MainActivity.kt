@@ -47,7 +47,7 @@ class MainActivity : AppCompatActivity() {
 
     private var currentDns: String = "none"
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
-    private var pendingDNS = "A" // default
+    //private var pendingDNS = "A" // default
 
     companion object {
         private const val TAG = "MainActivity"
@@ -98,7 +98,7 @@ class MainActivity : AppCompatActivity() {
             openAccessibilitySettings()
         }
 
-        btnOnA.setOnClickListener {
+        /*btnOnA.setOnClickListener {
             Log.d(TAG, "BUTTON START CLICKED")
             
             if (!isAccessibilityEnabled()) {
@@ -117,6 +117,29 @@ class MainActivity : AppCompatActivity() {
                 startCEWithVpnCheck("A")
                 Log.d(TAG, "Service started after force close (7s delay)")
             }, 7000) // 7 saat delay - SAFE TIMING
+        }*/
+
+        // UBAH BUTTON START:
+        btnOnA.setOnClickListener {
+            Log.d(TAG, "BUTTON START CLICKED - AUTO DNS SELECTION")
+            
+            if (!isAccessibilityEnabled()) {
+                Toast.makeText(this, "Sila enable Accessibility Service dulu!", Toast.LENGTH_LONG).show()
+                openAccessibilitySettings()
+                return@setOnClickListener
+            }
+            
+            val forceCloseIntent = Intent("com.example.cedokbooster.FORCE_CLOSE_PANDA")
+            LocalBroadcastManager.getInstance(this).sendBroadcast(forceCloseIntent)
+            Log.d(TAG, "Broadcast sent: FORCE_CLOSE_PANDA")
+            
+            Toast.makeText(this, "Force closing Panda app...", Toast.LENGTH_SHORT).show()
+            
+            Handler(Looper.getMainLooper()).postDelayed({
+                // 🟢 GANTI: startCEWithVpnCheck("A") dengan auto selection
+                startCEWithVpnCheck() 
+                Log.d(TAG, "Service started with AUTO DNS selection (7s delay)")
+            }, 7000)
         }
 
         btnOnB.setOnClickListener {
@@ -376,7 +399,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun startCEWithVpnCheck(dnsType: String) {
+    /*private fun startCEWithVpnCheck(dnsType: String) {
         // 1. Check jika VPN dah approve
         val vpnIntent = VpnService.prepare(this)
         
@@ -389,12 +412,35 @@ class MainActivity : AppCompatActivity() {
             // DAH APPROVE: Start CE seperti biasa
             startCoreEngine(dnsType)
         }
+    }*/
+
+    // UBAH FUNCTION startCEWithVpnCheck:
+    private fun startCEWithVpnCheck(dnsType: String = "auto") { // 🟢 DEFAULT "auto"
+        // 1. Check jika VPN dah approve
+        val vpnIntent = VpnService.prepare(this)
+        
+        if (vpnIntent != null) {
+            // BELUM APPROVE: Show popup dulu
+            startActivityForResult(vpnIntent, 100)
+            // 🟢 Simpan sebagai "auto"
+            // pendingDNS = dnsType // 🗑️ BUANG
+        } else {
+            // DAH APPROVE: Start CE dengan DNS type
+            startCoreEngine(dnsType) // 🟢 Pass "auto"
+        }
     }
+
+    /*override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        if (requestCode == 100 && resultCode == RESULT_OK) {
+            // SEKARANG VPN DAH APPROVE
+            startCoreEngine(pendingDNS)
+        }
+    }*/
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         if (requestCode == 100 && resultCode == RESULT_OK) {
             // SEKARANG VPN DAH APPROVE
-            startCoreEngine(pendingDNS)
+            startCoreEngine("auto") // 🟢 Start dengan auto selection
         }
     }
 
