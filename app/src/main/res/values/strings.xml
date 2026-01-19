@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">CedokBooster</string>
+    <string name="accessibility_service_description">CedokBooster Accessibility Service untuk automasi app. Service ini diperlukan untuk fungsi DO ALL JOB dan auto-launch Panda app.</string>
+</resources>
