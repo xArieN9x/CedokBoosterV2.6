@@ -1,0 +1,18 @@
+workflows:
+  android-release:
+    name: Android Release Workflow
+    max_build_duration: 60
+    environment:
+      java: 17
+    scripts:
+      - name: Build Debug APK using Gradle CLI
+        script: |
+          # Guna gradle CLI terus (sedia ada di Codemagic)
+          gradle clean assembleDebug
+
+      - name: Verify APK
+        script: |
+          ls -la app/build/outputs/apk/debug/
+
+    artifacts:
+      - app/build/outputs/**/*.apk
