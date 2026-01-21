@@ -49,6 +49,9 @@ class VpnDnsService : VpnService() {
         // REAL-TIME DNS HEALTH MONITOR + SMART SWITCH
         private const val MAX_DNS_FAILURES = 5
         private const val MIN_SWITCH_INTERVAL = 60_000L // 1 min
+        // new extra funtion enhance DNS monitor etc
+        private const val ORDER_COOLDOWN = 45000L // 45s selepas order
+        private const val LIGHT_CHECK_THRESHOLD = 500L // ms
         
         fun startVpn(context: Context, dnsType: String = "A") {
             val intent = Intent(context, VpnDnsService::class.java).apply {
@@ -98,6 +101,8 @@ class VpnDnsService : VpnService() {
     private var dnsHealthMonitorJob: kotlinx.coroutines.Job? = null
     private val dnsFailureCount = AtomicInteger(0)
     private var lastSwitchTime = 0L
+    // new extra funtion enhance DNS monitor etc
+    private var lastOrderTime = 0L
         
     /**
      * Dapatkan DNS type optimal secara auto
@@ -468,26 +473,42 @@ class VpnDnsService : VpnService() {
     }
 
     // REAL-TIME DNS HEALTH MONITOR + SMART SWITCH
+    // MODIFY startDnsHealthMonitor():
     private fun startDnsHealthMonitor() {
         dnsHealthMonitorJob?.cancel()
         dnsHealthMonitorJob = coroutineScope.launch {
+            var consecutiveFails = 0
+            
             while (isRunning.get()) {
-                delay(30_000) // setiap 30s
-    
+                delay(30_000) // 30s interval
+                
+                // Check jika patut run health check
+                if (!shouldCheckDnsHealth()) {
+                    continue
+                }
+                
                 val healthy = checkCurrentDnsHealth()
                 if (!healthy) {
-                    val fail = dnsFailureCount.incrementAndGet()
-                    LogUtil.w(TAG, "⚠️ DNS unhealthy count=$fail")
-    
-                    if (fail >= MAX_DNS_FAILURES) {
-                        dnsFailureCount.set(0)
+                    consecutiveFails++
+                    LogUtil.w(TAG, "⚠️ DNS unhealthy count=$consecutiveFails")
+                    
+                    if (consecutiveFails >= MAX_DNS_FAILURES) {
+                        LogUtil.d(TAG, "🚨 Triggering smart DNS switch")
+                        consecutiveFails = 0
                         smartDnsSwitch()
                     }
                 } else {
-                    dnsFailureCount.set(0)
+                    consecutiveFails = 0
+                    LogUtil.d(TAG, "✅ DNS health OK")
                 }
             }
         }
+    }
+    
+    // TAMBAH FUNCTION untuk order notification (dipanggil dari MainActivity/Service lain):
+    fun notifyOrderReceived() {
+        lastOrderTime = System.currentTimeMillis()
+        LogUtil.d(TAG, "📦 Order received, DNS check paused for ${ORDER_COOLDOWN/1000}s")
     }
     
     private fun stopDnsHealthMonitor() {
@@ -506,27 +527,48 @@ class VpnDnsService : VpnService() {
         }
     }
     
+    // MODIFY smartDnsSwitch() FUNCTION:
     private fun smartDnsSwitch() {
         val now = System.currentTimeMillis()
+        
+        // Cooldown check
         if (now - lastSwitchTime < MIN_SWITCH_INTERVAL) {
             LogUtil.d(TAG, "⏳ Skip switch (cooldown)")
             return
         }
+        
+        // Timing check
+        if (!shouldCheckDnsHealth()) {
+            return
+        }
+        
         lastSwitchTime = now
-    
+        
+        LogUtil.d(TAG, "🔄 Smart DNS switch triggered")
+        
         coroutineScope.launch {
             try {
-                val oldType = currentDnsType
-                val newType = getOptimalDnsType()
-    
-                if (newType != oldType) {
-                    LogUtil.d(TAG, "🔄 Smart switch DNS $oldType → $newType")
+                // STEP 1: QUICK CHECK untuk real-time decision
+                val quickBest = quickDnsCheckForSwitch()
+                LogUtil.d(TAG, "Quick check selected: $quickBest")
+                
+                // STEP 2: Determine type dari quick result
+                val newType = when {
+                    quickBest.startsWith("1.1.1") || quickBest.startsWith("1.0.0") -> "A"
+                    quickBest.startsWith("8.8.") -> "B"
+                    else -> "C"
+                }
+                
+                // STEP 3: Compare dengan current
+                if (newType != currentDnsType) {
+                    LogUtil.d(TAG, "🔄 Switching DNS $currentDnsType → $newType ($quickBest)")
                     currentDnsType = newType
                     performSoftRestart()
                     notifyDnsSwitch(getDnsServers(newType).first())
                 } else {
-                    LogUtil.d(TAG, "ℹ️ DNS type still optimal ($oldType)")
+                    LogUtil.d(TAG, "ℹ️ DNS type already optimal ($currentDnsType)")
                 }
+                
             } catch (e: Exception) {
                 LogUtil.e(TAG, "Smart switch failed: ${e.message}")
             }
@@ -539,6 +581,74 @@ class VpnDnsService : VpnService() {
             putExtra("time", System.currentTimeMillis())
         })
         updateNotification("Switched → $newDns")
+    }
+
+    // new extra fucntion enhance for DNS monitor etc..
+    private fun quickDnsCheckForSwitch(): String {
+        LogUtil.d(TAG, "🚀 Quick DNS check for real-time switch")
+        
+        val candidates = listOf("1.1.1.1", "8.8.8.8", "9.9.9.9") // 3 utama sahaja
+        
+        return try {
+            val results = mutableListOf<Pair<String, Long>>()
+            
+            candidates.forEach { dns ->
+                val latency = measureDnsLatency(dns)
+                if (latency < LIGHT_CHECK_THRESHOLD) {
+                    results.add(Pair(dns, latency))
+                    LogUtil.d(TAG, "✅ $dns → ${latency}ms")
+                } else {
+                    LogUtil.w(TAG, "⚠️ $dns → ${latency}ms (too slow)")
+                }
+            }
+            
+            // Pilih tercepat
+            results.minByOrNull { it.second }?.first ?: "1.1.1.1"
+            
+        } catch (e: Exception) {
+            LogUtil.e(TAG, "Quick check error: ${e.message}")
+            "1.1.1.1"
+        }
+    }
+    
+    private fun measureDnsLatency(dns: String): Long {
+        return try {
+            // Test dengan domain kritikal Panda (1 sahaja)
+            val start = System.nanoTime()
+            InetAddress.getAllByName("my.usehurrier.com")
+            val latency = (System.nanoTime() - start) / 1_000_000
+            
+            // Update history untuk trend analysis
+            updateDnsLatencyHistory(dns, latency)
+            
+            latency
+        } catch (e: Exception) {
+            999 // Error = sangat slow
+        }
+    }
+    
+    private fun updateDnsLatencyHistory(dns: String, latency: Long) {
+        // Simple history tracking
+        // Boleh expand kalau nak analisis trend
+    }
+    
+    private fun shouldCheckDnsHealth(): Boolean {
+        val now = System.currentTimeMillis()
+        
+        // 1. Jangan check kalau baru dapat order
+        if (now - lastOrderTime < ORDER_COOLDOWN) {
+            LogUtil.d(TAG, "⏸️ Skip DNS check (recent order)")
+            return false
+        }
+        
+        // 2. Jangan check kalau baru switch
+        if (now - lastSwitchTime < MIN_SWITCH_INTERVAL) {
+            LogUtil.d(TAG, "⏸️ Skip DNS check (recent switch)")
+            return false
+        }
+        
+        // 3. Check kalau idle time mencukupi
+        return true
     }
     
     /**
