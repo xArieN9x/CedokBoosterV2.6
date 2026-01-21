@@ -127,32 +127,21 @@ class VpnDnsService : VpnService() {
      */
     private fun getOptimalDnsType(): String {
         return try {
-            // ⬅️ CHECK CIRCUIT BREAKER
-            if (qualityCheckFailCount.get() >= 3) {
-                LogUtil.w(TAG, "⏸️ Skipping DNS check (circuit breaker)")
-                return "A" // Fallback ke Cloudflare
-            }
-            
             val bestDns = DnsQualityChecker.selectBestDnsForPanda(isPeakHour())
             
             when {
-                bestDns.startsWith("1.1.1.1") || bestDns.startsWith("1.0.0.1") -> {
+                bestDns == "1.1.1.1" || bestDns == "1.0.0.1" -> {
                     LogUtil.d(TAG, "✅ Selected Cloudflare DNS ($bestDns)")
                     "A"
                 }
-                bestDns.startsWith("8.8.") -> {
+                else -> { // 8.8.8.8 or 8.8.4.4
                     LogUtil.d(TAG, "✅ Selected Google DNS ($bestDns)")
                     "B"
                 }
-                else -> {
-                    LogUtil.d(TAG, "✅ Selected Other DNS ($bestDns)")
-                    "C"
-                }
             }
         } catch (e: Exception) {
-            qualityCheckFailCount.incrementAndGet()
             LogUtil.e(TAG, "DNS selection error, using default: ${e.message}")
-            "A"
+            "A" // Fallback ke Cloudflare
         }
     }
     
@@ -165,12 +154,7 @@ class VpnDnsService : VpnService() {
         return when (effectiveType.uppercase()) {
             "A" -> listOf("1.1.1.1", "1.0.0.1", "2606:4700:4700::1111", "2606:4700:4700::1001")
             "B" -> listOf("8.8.8.8", "8.8.4.4", "2001:4860:4860::8888", "2001:4860:4860::8844")
-            else -> listOf(
-                "1.1.1.1",           // Cloudflare - Primary (Fastest)
-                "8.8.8.8",           // Google - Secondary (Reliable)
-                "185.222.222.222",   // DNS.SB - No-filter guarantee  
-                "202.188.0.133"      // TM DNS - Lokal backup
-            )
+            else -> listOf("1.1.1.1", "1.0.0.1", "8.8.8.8", "8.8.4.4") // ⬅️ HYBRID FALLBACK
         }.also {
             currentDns = it.first()
             LogUtil.d(TAG, "Using DNS servers: $it (Type: $effectiveType)")
@@ -715,9 +699,8 @@ class VpnDnsService : VpnService() {
         }
         
         val newType = when {
-            bestDns.startsWith("1.1.1.1") || bestDns.startsWith("1.0.0.1") -> "A"
-            bestDns.startsWith("8.8.") -> "B"
-            else -> "C"
+            bestDns == "1.1.1.1" || bestDns == "1.0.0.1" -> "A"
+            else -> "B" // 8.8.8.8 or 8.8.4.4
         }
         
         if (newType != currentDnsType) {
