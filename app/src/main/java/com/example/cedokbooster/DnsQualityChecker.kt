@@ -36,16 +36,13 @@ class DnsQualityChecker {
             "1.1.1.1",          // Cloudflare Primary
             "1.0.0.1",          // Cloudflare Secondary
             "8.8.8.8",          // Google Primary
-            "8.8.4.4",          // Google Secondary
-            "185.222.222.222",  // DNS.SB - No filter
-            "202.188.0.133"     // TM DNS - Local
+            "8.8.4.4"           // Google Secondary
         )
 
         // ⬅️ SIMPLIFIED CANDIDATES FOR PEAK HOUR
         private val PEAK_HOUR_CANDIDATES = listOf(
             "1.1.1.1",          // Cloudflare
-            "8.8.8.8",          // Google
-            "185.222.222.222"   // DNS.SB
+            "8.8.8.8"           // Google
         )
 
         // ===== MEMORY: simpan sejarah =====
