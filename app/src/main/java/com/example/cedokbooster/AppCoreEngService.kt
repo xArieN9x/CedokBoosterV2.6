@@ -43,6 +43,7 @@ class AppCoreEngService : Service() {
 
     private var wakeLock: PowerManager.WakeLock? = null
     private var locationManager: LocationManager? = null
+    private var gpsHealthJob: Job? = null
     private var keepAliveJob: Job? = null
     private var dnsType: String = "none"
     private var gpsStatus: String = "idle"
@@ -70,29 +71,45 @@ class AppCoreEngService : Service() {
         }
     }
 
+    // ==================== UPDATE LOCATION LISTENERS ====================
     private val locationListener = object : LocationListener {
         override fun onLocationChanged(location: Location) {
             val accuracy = location.accuracy
-            Log.d(TAG, "GPS Update: Accuracy = $accuracy meters")
-    
+            Log.d(TAG, "🛰️ GPS Update: Accuracy = $accuracy meters")
+        
             if (accuracy < 25f && gpsStatus != "locked") {
                 gpsStatus = "locked"
                 Log.d(TAG, "GPS LOCKED! Accuracy: $accuracy meters")
                 broadcastStatus()
                 
-                // ✅ TAMBAH DELAY sebelum launch Panda
                 Handler(Looper.getMainLooper()).postDelayed({
-                    // Trigger auto-launch Panda
                     val intent = Intent(GPS_LOCK_ACHIEVED)
                     LocalBroadcastManager.getInstance(this@AppCoreEngService).sendBroadcast(intent)
                     Log.d(TAG, "GPS_LOCK_ACHIEVED broadcast sent (delayed)")
-                }, 2000) // Delay 2 saat
+                }, 2000)
             } else if (accuracy >= 25f && gpsStatus == "locked") {
                 gpsStatus = "stabilizing"
                 broadcastStatus()
             }
         }
-
+        override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
+        override fun onProviderEnabled(provider: String) {}
+        override fun onProviderDisabled(provider: String) {}
+    }
+    
+    // 2. TAMBAH Network Location Listener (untuk indoor)
+    private val networkLocationListener = object : LocationListener {
+        override fun onLocationChanged(location: Location) {
+            val accuracy = location.accuracy
+            Log.d(TAG, "📶 Network Location: Accuracy = $accuracy meters")
+            
+            // Kalau GPS takde signal, guna network location
+            if (accuracy < 100 && (gpsStatus == "stabilizing" || gpsStatus == "disabled")) {
+                gpsStatus = "network_lock"
+                broadcastStatus()
+                Log.d(TAG, "Network location active (indoor/backup)")
+            }
+        }
         override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
         override fun onProviderEnabled(provider: String) {}
         override fun onProviderDisabled(provider: String) {}
@@ -271,39 +288,101 @@ class AppCoreEngService : Service() {
     
         gpsStatus = "stabilizing"
         locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
-    
-        // Check if GPS provider is enabled
-        if (locationManager?.isProviderEnabled(LocationManager.GPS_PROVIDER) != true) {
-            Log.e(TAG, "GPS provider not enabled")
+        
+        // Check providers enabled
+        val isGpsEnabled = locationManager?.isProviderEnabled(LocationManager.GPS_PROVIDER) == true
+        val isNetworkEnabled = locationManager?.isProviderEnabled(LocationManager.NETWORK_PROVIDER) == true
+        
+        if (!isGpsEnabled && !isNetworkEnabled) {
+            Log.e(TAG, "No location providers available")
             gpsStatus = "disabled"
             broadcastStatus()
             return
         }
-    
+        
         try {
-            // USE EXISTING locationListener (val) - tidak perlu create baru
-            locationManager?.requestLocationUpdates(
-                LocationManager.GPS_PROVIDER,
-                1000L, // 1 second (original stable interval)
-                0f,
-                locationListener  // ✅ Use existing val listener
-            )
-            Log.d(TAG, "GPS Stabilization Started: 1000ms interval")
+            // ALWAYS START NETWORK PROVIDER (indoor backup)
+            if (isNetworkEnabled) {
+                locationManager?.requestLocationUpdates(
+                    LocationManager.NETWORK_PROVIDER,
+                    2000L, // 2 seconds untuk battery saving
+                    10f,   // 10 meter minimum distance change
+                    networkLocationListener
+                )
+                Log.d(TAG, "Network Provider started (indoor backup)")
+            }
+            
+            // START GPS jika enabled (high accuracy)
+            if (isGpsEnabled) {
+                locationManager?.requestLocationUpdates(
+                    LocationManager.GPS_PROVIDER,
+                    1000L, // 1 second untuk outdoor accuracy
+                    0f,    // No minimum distance
+                    gpsLocationListener  // Use renamed listener
+                )
+                Log.d(TAG, "GPS Provider started: 1000ms interval")
+            } else {
+                Log.w(TAG, "GPS not enabled, relying on network location")
+                gpsStatus = "network_only"
+            }
+            
             broadcastStatus()
         } catch (e: SecurityException) {
-            Log.e(TAG, "GPS permission not granted", e)
+            Log.e(TAG, "Location permission not granted", e)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start location updates: ${e.message}")
         }
     }
     
+    // 4. UPDATE stopGPSStabilization():
     private fun stopGPSStabilization() {
         try {
-            // locationListener sudah initialized sebagai val
-            locationManager?.removeUpdates(locationListener)
-            Log.d(TAG, "GPS stabilization stopped")
+            // Remove both listeners
+            locationManager?.removeUpdates(gpsLocationListener)
+            locationManager?.removeUpdates(networkLocationListener)
+            Log.d(TAG, "GPS + Network location stopped")
             gpsStatus = "stopped"
             broadcastStatus()
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to stop GPS: ${e.message}")
+            Log.e(TAG, "Failed to stop location: ${e.message}")
+        }
+    }
+
+    // Dalam class AppCoreEngService (tambah function baru):
+    private fun triggerGpsRecovery() {
+        Log.d(TAG, "🔄 Triggering GPS recovery...")
+        
+        // 1. Stop existing updates
+        try {
+            locationManager?.removeUpdates(gpsLocationListener)
+            locationManager?.removeUpdates(networkLocationListener)
+        } catch (e: Exception) { /* ignore */ }
+        
+        // 2. Small delay
+        handler.postDelayed({
+            // 3. Restart dengan fresh state
+            startGPSStabilization()
+            Log.d(TAG, "✅ GPS recovery completed")
+        }, 1000)
+    }
+
+    private fun startGpsHealthMonitor() {
+        gpsHealthJob = CoroutineScope(Dispatchers.IO).launch {
+            var lastGoodLocationTime = System.currentTimeMillis()
+            
+            while (isActive && isEngineRunning) {
+                delay(30000) // Check setiap 30 saat
+                
+                val currentTime = System.currentTimeMillis()
+                val timeSinceLastUpdate = currentTime - lastGoodLocationTime
+                
+                // Jika lebih 2 minit takde location update
+                if (timeSinceLastUpdate > 120000 && gpsStatus != "stopped") {
+                    Log.w(TAG, "⚠️ GPS stale for ${timeSinceLastUpdate/1000}s, triggering recovery")
+                    triggerGpsRecovery()
+                    lastGoodLocationTime = currentTime
+                }
+            }
         }
     }
 
