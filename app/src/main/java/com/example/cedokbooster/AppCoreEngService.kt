@@ -318,7 +318,7 @@ class AppCoreEngService : Service() {
                     LocationManager.GPS_PROVIDER,
                     1000L, // 1 second untuk outdoor accuracy
                     0f,    // No minimum distance
-                    gpsLocationListener  // Use renamed listener
+                    LocationListener  // Use renamed listener
                 )
                 Log.d(TAG, "GPS Provider started: 1000ms interval")
             } else {
@@ -338,7 +338,7 @@ class AppCoreEngService : Service() {
     private fun stopGPSStabilization() {
         try {
             // Remove both listeners
-            locationManager?.removeUpdates(gpsLocationListener)
+            locationManager?.removeUpdates(LocationListener)
             locationManager?.removeUpdates(networkLocationListener)
             Log.d(TAG, "GPS + Network location stopped")
             gpsStatus = "stopped"
@@ -354,7 +354,7 @@ class AppCoreEngService : Service() {
         
         // 1. Stop existing updates
         try {
-            locationManager?.removeUpdates(gpsLocationListener)
+            locationManager?.removeUpdates(LocationListener)
             locationManager?.removeUpdates(networkLocationListener)
         } catch (e: Exception) { /* ignore */ }
         
